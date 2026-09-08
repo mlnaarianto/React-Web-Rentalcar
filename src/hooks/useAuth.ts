@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import api, { getCsrfCookie } from "../lib/axios";
+import { requestForToken, removeFcmToken } from "../lib/firebase"; // 👈 removeFcmToken dikembalikan ke import
 
 interface User {
   id: number;
@@ -31,6 +32,15 @@ export const useAuth = () => {
 
       if (response.data.status === "success" && response.data.data) {
         setUser(response.data.data);
+
+        // 🟢 Setelah user terkonfirmasi login, daftarkan FCM web.
+        // Sengaja tidak di-await (fire and forget) supaya tidak
+        // memperlambat proses fetchUser -- kalau gagal, tinggal
+        // di-log, tidak perlu mem-block UI login.
+        requestForToken().catch((err) =>
+          console.error("requestForToken gagal:", err)
+        );
+
         return true;
       }
 
@@ -57,6 +67,20 @@ export const useAuth = () => {
   const logout = async () => {
     try {
       setLoading(true);
+
+      // 🔴 DIPERBAIKI: skema fcm_token sekarang PER-DEVICE (tabel
+      // user_fcm_tokens, unique per token), bukan lagi 1 kolom tunggal
+      // di users yang otomatis ke-overwrite tiap login. Kalau token
+      // browser ini tidak dihapus di sini, baris token-nya akan
+      // nyangkut selamanya di database dan browser ini TETAP menerima
+      // push notification walau user sudah logout -- baru berhenti
+      // kalau suatu saat login lagi dari browser yang sama (dan itu
+      // pun tidak dijamin terjadi).
+      //
+      // Wajib dipanggil SEBELUM /api/logout, karena endpoint hapus
+      // token butuh header Authorization (Sanctum) yang masih valid.
+      await removeFcmToken();
+
       await getCsrfCookie();
       await api.post("/api/logout");
       sessionStorage.removeItem("welcomed_this_session");

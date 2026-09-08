@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import YouTube from "react-youtube";
 import { AppLayout } from "../layouts/AppLayout";
 import { useAuth } from "../hooks/useAuth";
 import api from "../lib/axios";
@@ -7,7 +8,7 @@ import {
   FiArrowLeft, FiTruck, FiUser, FiSettings,
   FiFileText, FiCheckCircle, FiXCircle, FiPlayCircle,
   FiMapPin, FiMap, FiExternalLink, FiCopy, FiCheck,
-  FiZoomIn, FiX
+  FiZoomIn, FiX, FiNavigation
 } from "react-icons/fi";
 import { MapContainer, TileLayer, Marker, Popup, ZoomControl } from "react-leaflet";
 import L from "leaflet";
@@ -60,15 +61,18 @@ interface Car {
 const CarDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user, loading: authLoading, logout } = useAuth();
+  const { user, loading: authLoading } = useAuth();
 
   const [car, setCar] = useState<Car | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [addressCopied, setAddressCopied] = useState<boolean>(false);
 
-  // State untuk Modal Zoom Gambar Fullscreen
+  // State untuk Modal Zoom Gambar, Player Instance YouTube, & Durasi Video
   const [zoomImage, setZoomImage] = useState<{ url: string; title: string } | null>(null);
+  const [playerInstance, setPlayerInstance] = useState<any>(null);
+  const [currentTime, setCurrentTime] = useState<number>(0);
+  const [isVideoPlaying, setIsVideoPlaying] = useState<boolean>(false);
 
   useEffect(() => {
     const fetchCarDetail = async () => {
@@ -90,6 +94,25 @@ const CarDetail: React.FC = () => {
       fetchCarDetail();
     }
   }, [id]);
+
+  // Interval untuk melacak durasi real-time dari instance player YouTube di dalam kartu
+  useEffect(() => {
+    let interval: any;
+    if (playerInstance && isVideoPlaying) {
+      interval = setInterval(() => {
+        try {
+          const time = playerInstance.getCurrentTime();
+          if (typeof time === "number") {
+            setCurrentTime(time);
+          }
+        } catch (e) {}
+      }, 1000);
+    }
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [playerInstance, isVideoPlaying]);
 
   if (authLoading || loading) {
     return <div className="min-h-screen bg-gray-50 flex items-center justify-center text-gray-400 text-sm">Memuat detail kendaraan...</div>;
@@ -113,48 +136,32 @@ const CarDetail: React.FC = () => {
     return `http://localhost:8000${cleanPath}`;
   };
 
-  // Helper aman tanpa package eksternal untuk handle YouTube iframe & Video File / Google Drive
-  const renderVideoPlayer = (url: string) => {
-    const youtubeMatch = url.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/);
-
-    if (youtubeMatch && youtubeMatch[1]) {
-      const videoId = youtubeMatch[1];
-      return (
-        <div className="relative w-full pt-[56.25%] rounded-xl overflow-hidden bg-black shadow-inner">
-          <iframe
-            src={`https://www.youtube.com/embed/${videoId}`}
-            title="YouTube video player"
-            className="absolute top-0 left-0 w-full h-full border-0"
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-            allowFullScreen
-          ></iframe>
-        </div>
-      );
+  const extractYoutubeId = (url: string) => {
+    const patterns = [
+      /youtu\.be\/([a-zA-Z0-9_-]{11})/,
+      /youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})/,
+      /youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/,
+      /youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/,
+    ];
+    for (const pattern of patterns) {
+      const match = url.match(pattern);
+      if (match && match[1]) return match[1];
     }
+    return null;
+  };
 
-    let videoSource = url;
+  const resolveVideoUrl = (url: string) => {
     const driveMatch = url.match(/drive\.google\.com\/file\/d\/([^/]+)/);
     if (driveMatch) {
       const fileId = driveMatch[1];
-      videoSource = `https://drive.google.com/uc?export=download&id=${fileId}`;
+      return `https://drive.google.com/uc?export=download&id=${fileId}`;
     }
-
-    return (
-      <div className="relative w-full rounded-xl overflow-hidden bg-black shadow-inner">
-        <video
-          src={videoSource}
-          controls
-          className="w-full max-h-[400px] object-contain mx-auto"
-        >
-          Browser Anda tidak mendukung pemutar video ini.
-        </video>
-      </div>
-    );
+    return url;
   };
 
   if (errorMessage || !car) {
     return (
-      <AppLayout user={user} logout={logout}>
+      <AppLayout user={user} logout={() => {}}>
         <div className="text-center py-24 bg-white rounded-2xl shadow-sm border border-gray-100 p-8 max-w-lg mx-auto mt-10">
           <p className="text-red-500 font-semibold mb-4">{errorMessage || 'Mobil tidak ditemukan.'}</p>
           <button
@@ -172,7 +179,6 @@ const CarDetail: React.FC = () => {
   const personalData = owner?.personal_data;
   const isAvailable = car.status === 'tersedia';
 
-  // ============ DATA LOKASI USAHA (dari relasi user.rental_application) ============
   const rentalApplication = owner?.rental_application;
   const businessName = rentalApplication?.business_name?.toString() || "";
   const businessAddress =
@@ -192,13 +198,14 @@ const CarDetail: React.FC = () => {
 
   const openInGoogleMaps = () => {
     if (!hasLocation) return;
-    const url = `https://www.google.com/maps/search/?api=1&query=${businessLat},${businessLng}`;
+    const label = encodeURIComponent(car.name || 'Lokasi Usaha');
+    const url = `https://www.google.com/maps/search/?api=1&query=${businessLat},${businessLng}&query_place_id=${label}`;
     window.open(url, "_blank", "noopener,noreferrer");
   };
 
   const openDirections = () => {
     if (!hasLocation) return;
-    const url = `https://www.google.com/maps/dir/?api=1&destination=${businessLat},${businessLng}`;
+    const url = `https://www.google.com/maps/dir/?api=1&destination=${businessLat},${businessLng}&mode=d`;
     window.open(url, "_blank", "noopener,noreferrer");
   };
 
@@ -213,8 +220,29 @@ const CarDetail: React.FC = () => {
     }
   };
 
+  const youtubeId = car.video_url ? extractYoutubeId(car.video_url) : null;
+  const isYoutube = Boolean(youtubeId);
+
+  const handleOpenYouTubeWithTimestamp = () => {
+    if (youtubeId) {
+      let seconds = currentTime;
+      if (playerInstance && typeof playerInstance.getCurrentTime === "function") {
+        try {
+          seconds = playerInstance.getCurrentTime();
+        } catch (e) {}
+      }
+
+      const secondsInt = Math.floor(seconds);
+      const targetUrl = secondsInt > 1 
+        ? `https://www.youtube.com/watch?v=${youtubeId}&t=${secondsInt}s`
+        : `https://www.youtube.com/watch?v=${youtubeId}`;
+      
+      window.open(targetUrl, "_blank", "noopener,noreferrer");
+    }
+  };
+
   return (
-    <AppLayout user={user} logout={logout}>
+    <AppLayout user={user} logout={() => {}}>
       <div className="max-w-4xl mx-auto pb-12">
         {/* Tombol Kembali & Header Gambar */}
         <div className="mb-6">
@@ -225,7 +253,6 @@ const CarDetail: React.FC = () => {
             <FiArrowLeft size={16} /> Kembali
           </button>
 
-          {/* Banner Gambar Mobil dengan Fitur Zoom */}
           <div className="h-72 sm:h-96 w-full rounded-2xl overflow-hidden relative shadow-md bg-gray-100 group">
             {car.image ? (
               <div 
@@ -237,7 +264,6 @@ const CarDetail: React.FC = () => {
                   alt={car.name}
                   className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                 />
-                {/* Overlay Ikon Zoom saat Hover */}
                 <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                   <div className="bg-black/60 text-white px-4 py-2 rounded-xl flex items-center gap-2 backdrop-blur-sm text-sm font-medium shadow-lg">
                     <FiZoomIn size={18} /> Perbesar Foto
@@ -254,11 +280,7 @@ const CarDetail: React.FC = () => {
 
         {/* Grid Informasi Utama */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-          {/* Kolom Kiri: Nama Mobil, Harga, Spesifikasi, Video & Deskripsi */}
           <div className="lg:col-span-2 space-y-6">
-
-            {/* Kartu Nama & Brand Mobil */}
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex flex-wrap items-center justify-between gap-4">
               <div>
                 <span className="px-3 py-1 bg-blue-50 text-blue-600 rounded-lg text-xs font-bold uppercase tracking-wider">
@@ -272,7 +294,6 @@ const CarDetail: React.FC = () => {
               </span>
             </div>
 
-            {/* Kartu Harga */}
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex flex-wrap items-center justify-between gap-4">
               <div>
                 <p className="text-xs text-gray-500">Harga Sewa / Hari</p>
@@ -284,7 +305,6 @@ const CarDetail: React.FC = () => {
               </div>
             </div>
 
-            {/* Spesifikasi Kendaraan */}
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
               <h3 className="text-base font-bold text-gray-800 mb-4 flex items-center gap-2">
                 <FiSettings className="text-blue-600" /> Spesifikasi Kendaraan
@@ -313,7 +333,6 @@ const CarDetail: React.FC = () => {
               </div>
             </div>
 
-            {/* Lokasi Usaha (Peta) */}
             {(hasLocation || businessName || businessAddress) && (
               <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
                 <div className="p-6 pb-4">
@@ -355,7 +374,6 @@ const CarDetail: React.FC = () => {
                       </Marker>
                     </MapContainer>
 
-                    {/* Tombol melayang di atas peta */}
                     <div className="absolute top-3 left-3 z-[400] flex gap-2">
                       <button
                         onClick={openInGoogleMaps}
@@ -367,7 +385,7 @@ const CarDetail: React.FC = () => {
                         onClick={openDirections}
                         className="inline-flex items-center gap-1.5 bg-blue-600 px-3 py-2 rounded-lg shadow-md text-xs font-semibold text-white hover:bg-blue-700 transition-all"
                       >
-                        <FiTruck size={13} /> Rute
+                        <FiNavigation size={13} /> Rute
                       </button>
                     </div>
                   </div>
@@ -404,17 +422,55 @@ const CarDetail: React.FC = () => {
               </div>
             )}
 
-            {/* Video Review Kendaraan */}
+            {/* VIDEO REVIEW KENDARAAN (LANGSUNG TAMPIL DI DALAM KARTU) */}
             {car.video_url && (
               <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
                 <h3 className="text-base font-bold text-gray-800 mb-3 flex items-center gap-2">
                   <FiPlayCircle className="text-blue-600" /> Video Review Kendaraan
                 </h3>
-                {renderVideoPlayer(car.video_url)}
+                {isYoutube ? (
+                  <div className="space-y-3">
+                    <div className="relative w-full pt-[56.25%] rounded-xl overflow-hidden bg-black shadow-inner">
+                      <YouTube
+                        videoId={youtubeId}
+                        opts={{
+                          height: '100%',
+                          width: '100%',
+                          playerVars: {
+                            autoplay: 0,
+                          },
+                        }}
+                        onReady={(event) => setPlayerInstance(event.target)}
+                        onPlay={() => setIsVideoPlaying(true)}
+                        onPause={() => setIsVideoPlaying(false)}
+                        onEnd={() => setIsVideoPlaying(false)}
+                        className="absolute top-0 left-0 w-full h-full"
+                      />
+                    </div>
+                    <div className="flex justify-end">
+                      <button
+                        onClick={handleOpenYouTubeWithTimestamp}
+                        className="inline-flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-3.5 py-2 rounded-xl text-xs font-semibold transition-colors shadow-sm cursor-pointer"
+                      >
+                        <FiExternalLink size={13} /> 
+                        Tonton di YouTube {currentTime > 1 ? `(Lanjutkan di ${Math.floor(currentTime / 60)}:${(Math.floor(currentTime % 60)).toString().padStart(2, '0')})` : ''}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="relative w-full rounded-xl overflow-hidden bg-black shadow-inner">
+                    <video
+                      src={resolveVideoUrl(car.video_url)}
+                      controls
+                      className="w-full max-h-[400px] object-contain mx-auto"
+                    >
+                      Browser Anda tidak mendukung pemutar video ini.
+                    </video>
+                  </div>
+                )}
               </div>
             )}
 
-            {/* Deskripsi */}
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
               <h3 className="text-base font-bold text-gray-800 mb-3 flex items-center gap-2">
                 <FiFileText className="text-blue-600" /> Deskripsi
@@ -423,10 +479,8 @@ const CarDetail: React.FC = () => {
                 {car.description || 'Tidak ada deskripsi tambahan untuk kendaraan ini.'}
               </p>
             </div>
-
           </div>
 
-          {/* Kolom Kanan: Informasi Pemilik / Perental */}
           <div className="lg:col-span-1 space-y-6">
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
               <h3 className="text-base font-bold text-gray-800 mb-4 flex items-center gap-2">
@@ -451,7 +505,6 @@ const CarDetail: React.FC = () => {
                 </div>
               </div>
 
-              {/* Tombol Aksi Sewa */}
               <div className="mt-6 pt-6 border-t border-gray-100">
                 <button
                   disabled={!isAvailable}
@@ -468,29 +521,24 @@ const CarDetail: React.FC = () => {
               </div>
             </div>
           </div>
-
         </div>
       </div>
 
-      {/* MODAL ZOOM / PREVIEW GAMBAR FULLSCREEN */}
+      {/* MODAL ZOOM GAMBAR */}
       {zoomImage && (
         <div
           className="fixed inset-0 z-50 bg-black/95 backdrop-blur-sm flex flex-col items-center justify-center p-4"
           onClick={() => setZoomImage(null)}
         >
-          {/* Header Modal */}
           <div className="absolute top-4 left-6 right-6 flex justify-between items-center text-white z-10">
             <span className="text-sm font-semibold tracking-wide">{zoomImage.title}</span>
             <button
               onClick={() => setZoomImage(null)}
               className="p-2 bg-white/10 hover:bg-white/20 rounded-full text-white transition-colors"
-              title="Tutup"
             >
               <FiX size={20} />
             </button>
           </div>
-
-          {/* Gambar yang Di-zoom */}
           <div 
             className="relative max-w-5xl max-h-[85vh] overflow-auto flex items-center justify-center p-2" 
             onClick={(e) => e.stopPropagation()}

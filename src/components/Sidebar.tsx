@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { 
   FiUser, 
@@ -17,25 +17,87 @@ interface SidebarProps {
   onClose: () => void;
 }
 
+// Samakan format sebelum dibandingkan: enum Role di backend nilainya
+// 'Super Admin' (ada spasi, huruf besar) & 'Perental' (bukan snake_case),
+// sedangkan payload API bisa datang dalam variasi casing/format berbeda
+// tergantung endpoint. Normalize dengan buang spasi/underscore & lowercase
+// semua, supaya 'Super Admin', 'super_admin', dan 'SUPER ADMIN' dianggap sama.
+const normalizeRole = (value: string) =>
+  value.toLowerCase().replace(/[\s_]+/g, '');
+
 export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
   const location = useLocation();
-  const { user } = useAuth();
+  const { user, token } = useAuth();
   
   const isActive = (path: string) => location.pathname === path;
 
   // Deteksi role dari berbagai kemungkinan format struktur data API Laravel
-  const userRoleStr = typeof user?.role === 'string' ? user.role.toLowerCase() : '';
+  const userRoleStr = typeof user?.role === 'string' ? normalizeRole(user.role) : '';
   const userRolesArr = Array.isArray(user?.roles) 
-    ? user.roles.map((r: any) => (typeof r === 'string' ? r : r.name)?.toLowerCase()) 
+    ? user.roles.map((r: any) => normalizeRole((typeof r === 'string' ? r : r.name) || ''))
     : [];
 
   const isDriver = userRoleStr === 'driver' || userRolesArr.includes('driver');
   const isPerental = userRoleStr === 'perental' || userRolesArr.includes('perental');
-  const isSuperAdmin = userRoleStr === 'super_admin' || userRolesArr.includes('super_admin');
+  // 🟢 FIX: sebelumnya dibandingkan dengan 'super_admin' (underscore),
+  // padahal Role::SuperAdmin->value di backend adalah 'Super Admin' (spasi).
+  // Setelah di-lowercase saja hasilnya 'super admin', BUKAN 'super_admin',
+  // jadi perbandingan lama ini praktis selalu false. Sekarang dibandingkan
+  // dalam bentuk yang sudah dinormalisasi ('superadmin') lewat normalizeRole().
+  const isSuperAdmin = userRoleStr === 'superadmin' || userRolesArr.includes('superadmin');
 
   // ID Unik untuk Chat Admin (CS)
   const userEmail = user?.email || "";
   const uniqueChatId = `room_user_${userEmail.replace(/[^a-zA-Z0-9]/g, '_')}`;
+
+  // 🟢 FIX: sebelumnya receiver_id CS hardcode ke '1'. Sekarang diambil
+  // dari GET /api/support-agent, yang di backend query user berdasarkan
+  // Permission::ReceiveSupportChat -- bukan ID tetap. Kalau admin CS
+  // diganti/dipindah lewat Filament, Sidebar ini otomatis ikut tanpa
+  // perlu redeploy frontend.
+  //
+  // State null = belum selesai fetch / fetch gagal. Selama masih null,
+  // fallback ke '1' dipakai di adminChatHref supaya menu tetap bisa
+  // diklik (tidak nge-block user) walau backend endpoint ini belum siap
+  // atau permission belum di-assign ke siapa pun.
+  const [supportAgentId, setSupportAgentId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchSupportAgent = async () => {
+      try {
+        const res = await fetch('/api/support-agent', {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json',
+          },
+        });
+
+        if (!res.ok) return; // 404 dll -> biarkan fallback yang dipakai
+
+        const json = await res.json();
+        const id = json?.data?.id;
+
+        if (!cancelled && id) {
+          setSupportAgentId(String(id));
+        }
+      } catch {
+        // Diamkan -- fallback ID lama tetap dipakai, menu tidak ikut rusak
+        // hanya karena endpoint ini gagal diakses (mis. offline sesaat).
+      }
+    };
+
+    if (token) {
+      fetchSupportAgent();
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  const adminChatHref = `/chat?room=${uniqueChatId}&receiver_id=${supportAgentId ?? '1'}&name=${encodeURIComponent("Admin Rental (CS)")}`;
 
   return (
     <>
@@ -120,7 +182,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
             </div>
             
             <Link 
-              to={`/chat?room=${uniqueChatId}&name=${encodeURIComponent("Admin Rental (CS)")}`}
+              to={adminChatHref}
               onClick={onClose}
               className="flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-xl text-gray-600 hover:bg-gray-50 transition-all"
             >

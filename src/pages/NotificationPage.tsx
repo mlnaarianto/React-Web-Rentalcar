@@ -8,7 +8,9 @@ import {
   FiMapPin, 
   FiXCircle, 
   FiClock, 
-  FiBellOff 
+  FiBellOff,
+  FiTrash2,
+  FiTrash
 } from "react-icons/fi";
 import { useAuth } from "../hooks/useAuth";
 import { AppLayout } from "../layouts/AppLayout";
@@ -21,6 +23,12 @@ export const NotificationPage: React.FC = () => {
   const [notifications, setNotifications] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // 🟢 TAMBAHAN: state untuk modal konfirmasi "Hapus Semua"
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
+  // 🟢 TAMBAHAN: id notifikasi yang sedang dalam proses hapus (biar bisa dikasih spinner kecil)
+  const [deletingIds, setDeletingIds] = useState<Set<number | string>>(new Set());
 
   // Ambil data notifikasi dari API backend
   const fetchNotifications = async () => {
@@ -50,6 +58,53 @@ export const NotificationPage: React.FC = () => {
     }
   };
 
+  // 🟢 TAMBAHAN: Hapus satu notifikasi (optimistic update, rollback kalau gagal)
+  const deleteSingleNotification = async (notifId: number | string) => {
+    const targetIndex = notifications.findIndex((n) => n.id === notifId);
+    if (targetIndex === -1) return;
+
+    const deletedNotif = notifications[targetIndex];
+
+    // Tandai sedang dihapus (untuk spinner kecil di ikon trash)
+    setDeletingIds((prev) => new Set(prev).add(notifId));
+
+    // 1. Optimistic UI update: hapus dulu dari tampilan
+    setNotifications((prev) => prev.filter((n) => n.id !== notifId));
+
+    try {
+      await api.delete(`/api/notifications/${notifId}`);
+    } catch (err) {
+      console.error("Gagal menghapus notifikasi:", err);
+      // Rollback: kembalikan ke posisi semula kalau gagal
+      setNotifications((prev) => {
+        const next = [...prev];
+        next.splice(targetIndex, 0, deletedNotif);
+        return next;
+      });
+    } finally {
+      setDeletingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(notifId);
+        return next;
+      });
+    }
+  };
+
+  // 🟢 TAMBAHAN: Hapus semua notifikasi
+  const clearAllNotifications = async () => {
+    setIsClearing(true);
+    try {
+      await api.delete("/api/notifications");
+      setNotifications([]);
+    } catch (err) {
+      console.error("Gagal menghapus semua notifikasi:", err);
+      setErrorMessage("Gagal menghapus semua notifikasi.");
+    } finally {
+      setIsClearing(false);
+      setShowClearConfirm(false);
+    }
+  };
+
   useEffect(() => {
     if (!authLoading && user) {
       fetchNotifications();
@@ -68,20 +123,12 @@ export const NotificationPage: React.FC = () => {
       .private(channelName)
       .listen(".notification.created", (event: { data: any }) => {
         setNotifications((prev) => {
-          // 🟢 FIX: cegah duplikat. Di development, React StrictMode
-          // sengaja mount -> cleanup -> mount ulang komponen, jadi ada
-          // celah singkat di mana dua listener sempat aktif bersamaan
-          // dan event yang sama ke-tangkep dua kali. Guard ini
-          // memastikan notifikasi dengan id yang sama tidak pernah
-          // di-prepend lebih dari sekali, baik di dev maupun production.
           const alreadyExists = prev.some((n) => n.id === event.data.id);
           if (alreadyExists) return prev;
           return [event.data, ...prev];
         });
       });
 
-    // Cleanup: berhenti dengarkan channel saat komponen unmount
-    // atau user berganti, supaya listener tidak numpuk duplikat.
     return () => {
       echo.leave(channelName);
     };
@@ -160,9 +207,23 @@ export const NotificationPage: React.FC = () => {
       <div className="max-w-3xl mx-auto space-y-6 pb-12">
         
         {/* Header Halaman */}
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-          <h1 className="text-2xl font-bold text-gray-800">Notifikasi Aktivitas</h1>
-          <p className="text-sm text-gray-500 mt-1">Pantau informasi terbaru seputar pesanan, pembayaran, dan penugasan Anda.</p>
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-800">Notifikasi Aktivitas</h1>
+            <p className="text-sm text-gray-500 mt-1">Pantau informasi terbaru seputar pesanan, pembayaran, dan penugasan Anda.</p>
+          </div>
+
+          {/* 🟢 TAMBAHAN: Tombol Hapus Semua, hanya muncul kalau ada notifikasi */}
+          {!isLoading && !errorMessage && notifications.length > 0 && (
+            <button
+              onClick={() => setShowClearConfirm(true)}
+              className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2 text-red-600 hover:bg-red-50 rounded-xl text-xs font-semibold transition-all"
+              title="Bersihkan Semua"
+            >
+              <FiTrash2 className="w-4 h-4" />
+              <span className="hidden sm:inline">Hapus Semua</span>
+            </button>
+          )}
         </div>
 
         {/* Konten Utama */}
@@ -197,15 +258,16 @@ export const NotificationPage: React.FC = () => {
               const type = notif.type || "default";
               const isUnread = notif.is_read === false;
               const createdAt = notif.created_at || "";
+              const isDeleting = deletingIds.has(notif.id);
 
               return (
                 <div 
                   key={notif.id || Math.random()} 
-                  className={`p-4 rounded-2xl border transition-all flex items-start gap-3.5 ${
+                  className={`group p-4 rounded-2xl border transition-all flex items-start gap-3.5 ${
                     isUnread 
                       ? "bg-blue-50/40 border-blue-100 shadow-sm" 
                       : "bg-white border-gray-100 shadow-sm"
-                  }`}
+                  } ${isDeleting ? "opacity-50" : ""}`}
                 >
                   <div className={`p-3 rounded-full flex-shrink-0 ${getNotifColor(type)}`}>
                     {getNotifIcon(type)}
@@ -230,6 +292,16 @@ export const NotificationPage: React.FC = () => {
                       <span>{formatDate(createdAt)} {formatTime(createdAt) ? `• ${formatTime(createdAt)}` : ""}</span>
                     </div>
                   </div>
+
+                  {/* 🟢 TAMBAHAN: Tombol hapus satu notifikasi */}
+                  <button
+                    onClick={() => deleteSingleNotification(notif.id)}
+                    disabled={isDeleting}
+                    className="flex-shrink-0 p-2 text-gray-300 hover:text-red-600 hover:bg-red-50 rounded-full transition-all opacity-0 group-hover:opacity-100 disabled:opacity-50"
+                    title="Hapus notifikasi ini"
+                  >
+                    <FiTrash size={15} />
+                  </button>
                 </div>
               );
             })}
@@ -237,6 +309,33 @@ export const NotificationPage: React.FC = () => {
         )}
 
       </div>
+
+      {/* 🟢 TAMBAHAN: Modal konfirmasi Hapus Semua */}
+      {showClearConfirm && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 px-4">
+          <div className="bg-white rounded-2xl shadow-xl max-w-sm w-full p-6">
+            <h3 className="text-lg font-bold text-gray-800 mb-2">Hapus Semua Notifikasi?</h3>
+            <p className="text-sm text-gray-500 mb-6">Tindakan ini tidak dapat dibatalkan.</p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowClearConfirm(false)}
+                disabled={isClearing}
+                className="px-4 py-2 rounded-xl text-sm font-semibold text-gray-600 hover:bg-gray-100 transition-all disabled:opacity-50"
+              >
+                Batal
+              </button>
+              <button
+                onClick={clearAllNotifications}
+                disabled={isClearing}
+                className="px-4 py-2 rounded-xl text-sm font-semibold text-white bg-red-600 hover:bg-red-700 transition-all disabled:opacity-50 inline-flex items-center gap-2"
+              >
+                {isClearing && <div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-white"></div>}
+                Hapus
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </AppLayout>
   );
 };

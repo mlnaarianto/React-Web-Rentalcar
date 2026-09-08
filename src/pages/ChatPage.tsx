@@ -1,17 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
-import { FiArrowLeft, FiSend, FiLock } from "react-icons/fi";
-import {
-  collection,
-  doc,
-  addDoc,
-  setDoc,
-  query,
-  orderBy,
-  onSnapshot,
-  serverTimestamp,
-} from "firebase/firestore";
-import { db } from "../lib/firebase";
+import { FiArrowLeft, FiSend, FiLock, FiTrash2, FiAlertTriangle } from "react-icons/fi";
+import api from "../lib/axios";
+import echo from "../lib/echo";
 import { useAuth } from "../hooks/useAuth";
 import { AppLayout } from "../layouts/AppLayout";
 
@@ -20,88 +11,219 @@ export const ChatPage: React.FC = () => {
   const navigate = useNavigate();
   const { user, loading: authLoading, logout } = useAuth();
 
-  // Ambil parameter dari query URL (contoh: /chat?room=room_rental_2_user_3&name=Perental: John&avatar=...)
   const chatId = searchParams.get("room") || "";
   const receiverName = searchParams.get("name") || "Perental";
   const receiverAvatarUrl = searchParams.get("avatar") || "";
+
+  // 🔴 FIX: sebelumnya ada fallback `|| "1"` di sini. Itu berbahaya --
+  // kalau param receiver_id hilang/kosong di URL (mis. link dari halaman
+  // daftar chat lupa menyertakannya), chat tetap bisa dipakai normal
+  // (pesan tetap terkirim & muncul di room), TAPI notifikasi
+  // (Notification::create di backend) diam-diam dibuat untuk user ID "1"
+  // -- bukan customer yang sebenarnya sedang diajak chat. Akibatnya
+  // penerima asli tidak pernah menerima notifikasi/badge, walau pesan
+  // chat itu sendiri terlihat terkirim sukses.
+  //
+  // Sekarang: kalau param tidak ada / kosong, jadikan null secara
+  // eksplisit supaya bisa dideteksi & diblokir SEBELUM sempat mengirim
+  // notifikasi ke user yang salah.
+  const receiverIdParamRaw = searchParams.get("receiver_id");
+  const receiverIdParam =
+    receiverIdParamRaw && receiverIdParamRaw.trim() !== ""
+      ? receiverIdParamRaw
+      : null;
 
   const [messages, setMessages] = useState<any[]>([]);
   const [inputText, setInputText] = useState<string>("");
   const [isLoadingMessages, setIsLoadingMessages] = useState<boolean>(true);
 
+  // State untuk modal/popup konfirmasi hapus pesan
+  const [selectedMessageToDelete, setSelectedMessageToDelete] = useState<any | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // ID & Nama User yang sedang login (aktif)
-  const currentUserId = user?.id ? String(user.id) : "3";
+  const currentUserId = user?.id ? String(user.id) : "";
   const currentUserName = user?.name || "Penyewa";
 
-  // Auto-scroll ke bawah saat ada pesan baru
+  const [realChatId, setRealChatId] = useState<string | null>(null);
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
-  // Listener Real-time Firestore untuk mengambil pesan
+  // Menyeragamkan bentuk data pesan dari 3 sumber berbeda (fetch riwayat,
+  // event Echo 'message.sent', dan response setelah kirim pesan) menjadi
+  // satu format konsisten yang dipakai UI.
+  //
+  // PENTING: nama pengirim SENGAJA tidak diambil dari field 'sender_name'
+  // backend, karena backend tidak pernah mengirim field flat 'sender_name'
+  // yang reliable -- terutama di payload event socket, yang kadang tidak
+  // menyertakannya sama sekali. Pola ini sama persis dengan
+  // _normalizeMessage di ChatPage Flutter. Karena room chat ini selalu
+  // 1-lawan-1 (chatId unik per pasangan user <-> admin/CS), nama pengirim
+  // bisa disimpulkan dengan aman hanya dari sender_id, tanpa bergantung ke
+  // bentuk response backend yang bisa berubah-ubah.
+  const normalizeMessage = (raw: any) => {
+    const senderId = raw?.sender_id != null ? String(raw.sender_id) : "";
+    const senderName =
+      senderId === currentUserId ? currentUserName : receiverName;
+
+    return {
+      id: raw?.id,
+      text: raw?.text ?? "",
+      sender_id: senderId,
+      sender_name: senderName,
+      created_at: raw?.created_at,
+    };
+  };
+
+  // 🔴 FIX: log eksplisit begitu terdeteksi halaman ini dibuka tanpa
+  // receiver_id yang valid, supaya kejadian ini gampang ditemukan lewat
+  // console / error tracking (mis. Sentry) daripada gagal diam-diam.
+  useEffect(() => {
+    if (!authLoading && user && chatId && !receiverIdParam) {
+      console.error(
+        `ChatPage dibuka tanpa receiver_id yang valid (room=${chatId}). ` +
+          `Notifikasi TIDAK akan dikirim sampai halaman ini dibuka ulang ` +
+          `dengan receiver_id yang benar dari daftar percakapan.`
+      );
+    }
+  }, [authLoading, user, chatId, receiverIdParam]);
+
+  // 1. Fetch Pesan Awal & Resolve ID numeric asli
   useEffect(() => {
     if (!chatId) return;
 
-    const messagesRef = collection(db, "chats", chatId, "messages");
-    const q = query(messagesRef, orderBy("created_at", "asc"));
+    const initChat = async () => {
+      try {
+        const resMessages = await api.get(`/api/chats/${chatId}/messages`);
+        const fetchedMessages = resMessages.data.data || [];
 
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const msgs = snapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
-        setMessages(msgs);
+        setMessages(fetchedMessages.map((msg: any) => normalizeMessage(msg)));
         setIsLoadingMessages(false);
         setTimeout(scrollToBottom, 100);
-      },
-      (error) => {
-        console.error("Gagal mengambil pesan real-time:", error);
+
+        const resResolve = await api.get(`/api/chats/${chatId}/resolve`);
+        if (resResolve.data && resResolve.data.chat_id) {
+          setRealChatId(String(resResolve.data.chat_id));
+        } else {
+          setRealChatId(chatId);
+        }
+      } catch (error) {
+        console.error("Gagal menginisialisasi chat:", error);
         setIsLoadingMessages(false);
       }
-    );
+    };
 
-    return () => unsubscribe();
+    initChat();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId]);
 
-  // Fungsi Kirim Pesan
+  // 2. Real-time Listener menggunakan Laravel Echo & Reverb
+  useEffect(() => {
+    if (!realChatId) return;
+
+    const channelName = `chat.${realChatId}`;
+    console.log(`Mengaktifkan Echo listener ke channel: private-${channelName}`);
+
+    const channel = echo.private(channelName);
+
+    channel.listen(".message.sent", (e: any) => {
+      const normalized = normalizeMessage(e.message);
+
+      setMessages((prev) => {
+        const alreadyExists = prev.some((m) => m.id === normalized.id);
+        if (alreadyExists) return prev;
+        return [...prev, normalized];
+      });
+
+      setTimeout(scrollToBottom, 100);
+    });
+
+    // Tangkap event pesan dihapus secara real-time
+    channel.listen(".message.deleted", (e: any) => {
+      const deletedId = e.message_id;
+      setMessages((prev) => prev.filter((m) => m.id !== deletedId));
+    });
+
+    return () => {
+      echo.leave(channelName);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [realChatId]);
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputText.trim() || !chatId) return;
+
+    // 🔴 FIX: blokir pengiriman kalau receiver_id tidak ada/valid.
+    // Lebih baik user tidak bisa kirim pesan sama sekali daripada pesan
+    // terkirim tapi notifikasi diam-diam nyasar ke user lain.
+    if (!receiverIdParam) {
+      alert(
+        "Tidak bisa mengirim pesan: penerima tidak teridentifikasi. " +
+          "Silakan kembali ke daftar percakapan dan buka chat ini lagi."
+      );
+      return;
+    }
 
     const messageText = inputText.trim();
     setInputText("");
 
     try {
-      // 1. Simpan pesan ke sub-koleksi messages
-      await addDoc(collection(db, "chats", chatId, "messages"), {
+      const response = await api.post("/api/messages", {
+        chat_id: realChatId || chatId,
+        receiver_id: receiverIdParam,
         text: messageText,
-        sender_id: currentUserId,
-        sender_name: currentUserName,
-        created_at: serverTimestamp(),
       });
 
-      // 2. Update dokumen utama room chat (last_message)
-      await setDoc(
-        doc(db, "chats", chatId),
-        {
-          last_message: messageText,
-          updated_at: serverTimestamp(),
-          last_sender_id: currentUserId,
-          last_sender_name: currentUserName,
-        },
-        { merge: true }
-      );
-    } catch (err) {
-      console.error("Gagal mengirim pesan:", err);
+      const sentMessage = response.data.data;
+
+      if (sentMessage?.id) {
+        const normalized = normalizeMessage(sentMessage);
+        setMessages((prev) => {
+          const alreadyExists = prev.some((m) => m.id === normalized.id);
+          if (alreadyExists) return prev;
+          return [...prev, normalized];
+        });
+        setTimeout(scrollToBottom, 100);
+      }
+
+      if (!realChatId && sentMessage?.chat_id) {
+        setRealChatId(String(sentMessage.chat_id));
+      }
+    } catch (err: any) {
+      console.error("Gagal mengirim pesan:", err.response?.data || err.message);
       alert("Pesan gagal terkirim. Periksa koneksi Anda.");
     }
   };
 
-  // Inisial nama untuk avatar fallback jika tidak ada foto profil
+  // Fungsi untuk menghapus pesan
+  const handleDeleteMessage = async (msgToDelete: any) => {
+    if (!msgToDelete || !msgToDelete.id) return;
+
+    const messageId = msgToDelete.id;
+
+    // Optimistic update: hapus dari UI terlebih dahulu
+    setMessages((prev) => prev.filter((m) => m.id !== messageId));
+    setSelectedMessageToDelete(null);
+
+    try {
+      const response = await api.delete(`/api/messages/${messageId}`);
+      if (response.status !== 200) {
+        throw new Error("Gagal menghapus pesan di server");
+      }
+    } catch (err: any) {
+      console.error("Gagal menghapus pesan:", err.response?.data || err.message);
+      alert("Gagal menghapus pesan. Silakan coba lagi.");
+      // Rollback jika gagal: fetch ulang dan normalisasi ulang datanya
+      const resMessages = await api.get(`/api/chats/${chatId}/messages`);
+      if (resMessages.data && resMessages.data.data) {
+        setMessages(resMessages.data.data.map((msg: any) => normalizeMessage(msg)));
+      }
+    }
+  };
+
   const getInitials = (name: string) => {
     const trimmed = name.trim();
     if (!trimmed) return "?";
@@ -110,17 +232,17 @@ export const ChatPage: React.FC = () => {
     return (parts[0].substring(0, 1) + parts[1].substring(0, 1)).toUpperCase();
   };
 
-  // Format Waktu Pesan (HH:mm)
-  const formatTime = (timestamp: any) => {
-    if (!timestamp || !timestamp.toDate) return "";
-    const date = timestamp.toDate();
+  const formatTime = (rawTime: any) => {
+    if (!rawTime) return "";
+    const date = new Date(rawTime);
+    if (isNaN(date.getTime())) return "";
     return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
   };
 
-  // Format Header Tanggal Pemisah Pesan
-  const formatDateSeparator = (timestamp: any) => {
-    if (!timestamp || !timestamp.toDate) return "";
-    const date = timestamp.toDate();
+  const formatDateSeparator = (rawTime: any) => {
+    if (!rawTime) return "";
+    const date = new Date(rawTime);
+    if (isNaN(date.getTime())) return "";
     const now = new Date();
 
     const isToday =
@@ -150,10 +272,35 @@ export const ChatPage: React.FC = () => {
     return null;
   }
 
+  // 🔴 FIX: tampilkan halaman peringatan yang jelas kalau chat dibuka
+  // tanpa receiver_id yang valid, daripada membiarkan user mengetik &
+  // mengira pesan+notifikasi terkirim normal padahal tidak.
+  if (chatId && !receiverIdParam) {
+    return (
+      <AppLayout user={user} logout={logout}>
+        <div className="max-w-lg mx-auto mt-10 bg-white p-6 rounded-2xl border border-red-200 shadow-sm text-center">
+          <div className="w-14 h-14 mx-auto mb-4 rounded-full bg-red-50 text-red-600 flex items-center justify-center">
+            <FiAlertTriangle size={26} />
+          </div>
+          <h3 className="text-lg font-bold text-gray-800 mb-2">Chat tidak bisa dibuka</h3>
+          <p className="text-sm text-gray-500 mb-6">
+            Data penerima pesan tidak ditemukan pada tautan ini, sehingga notifikasi
+            tidak bisa dikirim dengan benar. Silakan kembali ke daftar percakapan dan
+            buka chat ini lagi.
+          </p>
+          <button
+            onClick={() => navigate(-1)}
+            className="px-4 py-2 bg-red-600 text-white rounded-xl text-sm font-semibold hover:bg-red-700 transition-colors"
+          >
+            Kembali ke daftar percakapan
+          </button>
+        </div>
+      </AppLayout>
+    );
+  }
+
   return (
     <AppLayout user={user} logout={logout}>
-      {/* Page header — dibungkus card putih (senada dengan card mobil di
-          Dashboard) supaya jelas ini konten halaman, bukan lanjutan navbar */}
       <div className="mb-6 bg-white rounded-xl border border-gray-100 shadow-sm px-4 sm:px-5 py-3.5 flex items-center justify-between">
         <div className="flex items-center gap-3 min-w-0">
           <button
@@ -184,7 +331,6 @@ export const ChatPage: React.FC = () => {
         </span>
       </div>
 
-      {/* Ruang Pesan — langsung menyatu dengan halaman, tanpa border/box besar */}
       <div className="min-h-[45vh] pb-28">
         {isLoadingMessages ? (
           <div className="flex justify-center py-16">
@@ -201,7 +347,7 @@ export const ChatPage: React.FC = () => {
         ) : (
           <div className="space-y-2">
             {messages.map((msg, index) => {
-              const isMe = String(msg.sender_id) === currentUserId;
+              const isMe = String(msg.sender_id) === String(currentUserId);
 
               let showDateSeparator = false;
               if (msg.created_at) {
@@ -209,9 +355,9 @@ export const ChatPage: React.FC = () => {
                   showDateSeparator = true;
                 } else {
                   const prevMsg = messages[index - 1];
-                  if (prevMsg.created_at?.toDate && msg.created_at?.toDate) {
-                    const prevDate = prevMsg.created_at.toDate();
-                    const currDate = msg.created_at.toDate();
+                  if (prevMsg.created_at && msg.created_at) {
+                    const prevDate = new Date(prevMsg.created_at);
+                    const currDate = new Date(msg.created_at);
                     showDateSeparator = prevDate.toDateString() !== currDate.toDateString();
                   }
                 }
@@ -229,9 +375,11 @@ export const ChatPage: React.FC = () => {
 
                   <div className={`flex ${isMe ? "justify-end" : "justify-start"}`}>
                     <div
+                      onClick={isMe ? () => setSelectedMessageToDelete(msg) : undefined}
+                      title={isMe ? "Klik untuk opsi hapus pesan" : ""}
                       className={`max-w-[85%] sm:max-w-[55%] rounded-2xl px-4 py-2.5 space-y-1 ${
                         isMe
-                          ? "bg-blue-600 text-white rounded-br-md"
+                          ? "bg-blue-600 text-white rounded-br-md cursor-pointer hover:bg-blue-700 transition-colors"
                           : "bg-white text-gray-900 rounded-bl-md border border-gray-100 shadow-sm"
                       }`}
                     >
@@ -253,8 +401,34 @@ export const ChatPage: React.FC = () => {
         )}
       </div>
 
-      {/* Kotak balas pesan — menempel di bawah area konten (bukan floating card
-          terpisah), tetap terlihat saat scroll berkat sticky positioning */}
+      {/* Modal / Bottom Sheet Konfirmasi Hapus Pesan */}
+      {selectedMessageToDelete && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl p-6 shadow-xl animate-in fade-in zoom-in-95 duration-200">
+            <h3 className="text-lg font-bold text-gray-800 mb-2">Hapus Pesan</h3>
+            <p className="text-sm text-gray-600 mb-6">
+              Apakah Anda yakin ingin menghapus pesan ini? Pesan yang dihapus akan hilang dari sistem.
+            </p>
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setSelectedMessageToDelete(null)}
+                className="px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-100 rounded-xl transition-colors cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteMessage(selectedMessageToDelete)}
+                className="px-4 py-2 text-sm font-semibold bg-red-600 text-white hover:bg-red-700 rounded-xl transition-colors cursor-pointer flex items-center gap-2"
+              >
+                <FiTrash2 size={16} /> Hapus
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <form
         onSubmit={handleSendMessage}
         className="sticky bottom-4 sm:bottom-6 bg-white p-2.5 rounded-2xl border border-gray-200 shadow-md flex items-center gap-2"

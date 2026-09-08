@@ -3,10 +3,12 @@ import Swal from "sweetalert2";
 import { Navbar } from "../components/Navbar";
 import { Sidebar } from "../components/Sidebar";
 import { Footer } from "../components/Footer";
+// 🟢 import requestForToken & onMessageListener DIHAPUS -- FCM
+// sekarang cuma ditangani sekali di App.tsx, lihat catatan di sana.
 
 interface AppLayoutProps {
   user: {
-    id: number;         // 🟢 TAMBAHAN: dibutuhkan Navbar untuk channel real-time
+    id: number;
     name?: string;
     email?: string;
     avatar?: string;
@@ -14,12 +16,13 @@ interface AppLayoutProps {
   };
   logout: () => void;
   children: React.ReactNode;
-  onSearchChange?: (query: string) => void; // 👈 Tambahkan ini
+  onSearchChange?: (query: string) => void;
 }
 
 export const AppLayout: React.FC<AppLayoutProps> = ({ user, logout, children, onSearchChange }) => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
+  // Efek untuk SweetAlert sambutan login
   useEffect(() => {
     if (user?.name) {
       const params = new URLSearchParams(window.location.search);
@@ -51,19 +54,17 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ user, logout, children, on
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 flex">
-      {/* Sidebar Kiri */}
       <Sidebar 
         isOpen={isSidebarOpen} 
         onClose={() => setIsSidebarOpen(false)} 
       />
 
-      {/* Konten Kanan */}
       <div className="flex-1 flex flex-col min-w-0">
         <Navbar 
           user={user} 
           onToggleSidebar={toggleSidebar} 
           logout={logout}
-          onSearchChange={onSearchChange} // 👈 Teruskan ke Navbar
+          onSearchChange={onSearchChange}
         />
         
         <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -75,3 +76,5 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ user, logout, children, on
     </div>
   );
 };
+
+export default AppLayout;

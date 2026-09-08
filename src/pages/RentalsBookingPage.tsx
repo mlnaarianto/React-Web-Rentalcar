@@ -137,26 +137,86 @@ export const RentalsBookingPage: React.FC = () => {
     }
   };
 
+  // Navigasi ke Halaman Chat Perental <-> Penyewa.
+  //
+  // 🔴 FIX (menyamakan pola dengan _openChatWithRenter di Flutter):
+  // - SEBELUMNYA ada fallback `renter.id || "3"` dan `user?.id || "2"`.
+  //   Fallback ini berbahaya: kalau data renter atau user belum lengkap
+  //   (mis. relasi belum ter-load dari backend), chat tetap dibuka tapi
+  //   diam-diam memakai ID yang SALAH (renter fiktif ID 3, atau seolah
+  //   perental login sebagai user ID 2) tanpa pemberitahuan apapun ke
+  //   perental. Sekarang di-guard eksplisit: kalau ID tidak valid,
+  //   tampilkan alert dan batalkan navigasi -- sama seperti guard
+  //   `_currentUserId == null` / `renterId.isEmpty` di Flutter.
+  // - SEBELUMNYA juga TIDAK menyertakan parameter `receiver_id` di query
+  //   string, padahal ChatPage.tsx mewajibkan receiver_id ada (lihat guard
+  //   "Chat tidak bisa dibuka"). Tanpa parameter ini, tombol "Chat
+  //   Penyewa" SELALU berakhir di halaman error tersebut.
   const handleOpenChatWithRenter = (renter: any) => {
-    if (!renter) return;
-    const renterId = renter.id || "3";
-    const renterName = renter.name || "Penyewa";
-    const renterAvatar = renter.avatar || "";
-    const currentUserId = user?.id || "2";
+    if (!user?.id) {
+      alert("Data akun belum siap, coba lagi sesaat lagi.");
+      return;
+    }
 
+    const renterId = renter?.id != null ? String(renter.id) : "";
+    if (!renterId) {
+      alert("ID Penyewa tidak valid.");
+      return;
+    }
+
+    const renterName = renter?.name || "Penyewa";
+    const renterAvatar = renter?.avatar || "";
+    const currentUserId = String(user.id);
+
+    // PENTING: skema "room_rental_{perentalId}_user_{renterId}" ini harus
+    // PERSIS SAMA dengan yang dipakai halaman chat milik Penyewa untuk room
+    // yang sama (backend mencocokkan chatId ke room_identifier apa adanya).
+    // Kalau sisi Penyewa membangun chatId dengan urutan/format berbeda,
+    // keduanya akan dianggap dua room terpisah oleh backend.
     const uniqueChatId = `room_rental_${currentUserId}_user_${renterId}`;
-    navigate(`/chat?room=${uniqueChatId}&name=${encodeURIComponent(`Penyewa: ${renterName}`)}&avatar=${encodeURIComponent(renterAvatar)}`);
+
+    const params = new URLSearchParams({
+      room: uniqueChatId,
+      receiver_id: renterId,
+      name: `Penyewa: ${renterName}`,
+    });
+    if (renterAvatar) params.set("avatar", renterAvatar);
+
+    navigate(`/chat?${params.toString()}`);
   };
 
+  // Navigasi ke Halaman Chat Perental <-> Driver.
+  // Guard dan alasan yang sama persis seperti handleOpenChatWithRenter di
+  // atas -- lihat komentar di sana.
   const handleOpenChatWithDriver = (driver: any) => {
-    if (!driver) return;
-    const driverId = driver.id || "";
-    const driverName = driver.name || "Driver";
-    const driverAvatar = driver.avatar || "";
-    const currentUserId = user?.id || "2";
+    if (!user?.id) {
+      alert("Data akun belum siap, coba lagi sesaat lagi.");
+      return;
+    }
 
+    const driverId = driver?.id != null ? String(driver.id) : "";
+    if (!driverId) {
+      alert("ID Driver tidak valid.");
+      return;
+    }
+
+    const driverName = driver?.name || "Driver";
+    const driverAvatar = driver?.avatar || "";
+    const currentUserId = String(user.id);
+
+    // Catatan skema chatId sama seperti di handleOpenChatWithRenter --
+    // pastikan sisi Driver (kalau punya halaman chat sendiri ke Perental)
+    // memakai format yang identik untuk room yang sama.
     const uniqueChatId = `room_rental_${currentUserId}_driver_${driverId}`;
-    navigate(`/chat?room=${uniqueChatId}&name=${encodeURIComponent(`Driver: ${driverName}`)}&avatar=${encodeURIComponent(driverAvatar)}`);
+
+    const params = new URLSearchParams({
+      room: uniqueChatId,
+      receiver_id: driverId,
+      name: `Driver: ${driverName}`,
+    });
+    if (driverAvatar) params.set("avatar", driverAvatar);
+
+    navigate(`/chat?${params.toString()}`);
   };
 
   const formatDate = (dateStr: string) => {

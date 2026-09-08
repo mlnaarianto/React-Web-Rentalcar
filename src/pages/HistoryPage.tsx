@@ -90,26 +90,65 @@ export const HistoryPage: React.FC = () => {
     }
   };
 
+  // Navigasi ke Halaman Chat Penyewa <-> Perental (Pemilik Mobil).
+  //
+  // 🔴 FIX (menyamakan pola guard dengan _openChatWithRentalOwner /
+  // _openChatWithRenter / _openChatWithDriver di file-file lain -- BUKAN
+  // meniru _openChatWithOwner versi Flutter BookingHistoryPage apa adanya,
+  // karena versi itu sendiri masih memakai fallback hardcode lama):
+  // - SEBELUMNYA ada fallback `carData.user_id ? ... : "2"` dan
+  //   `user?.id ? ... : "3"`. Fallback ini berbahaya: kalau relasi
+  //   pemilik mobil (`car.user`/`car.owner`) belum ter-load dari backend,
+  //   atau data user login belum siap, chat tetap dibuka tapi diam-diam
+  //   memakai ID yang SALAH (owner fiktif ID 2, atau seolah penyewa login
+  //   sebagai user ID 3) tanpa pemberitahuan apapun. Sekarang di-guard
+  //   eksplisit: kalau ID tidak valid, tampilkan alert dan batalkan
+  //   navigasi.
+  // - SEBELUMNYA juga TIDAK menyertakan parameter `receiver_id` di query
+  //   string, padahal ChatPage.tsx mewajibkan receiver_id ada (lihat guard
+  //   "Chat tidak bisa dibuka"). Tanpa parameter ini, tombol "Chat
+  //   Perental" SELALU berakhir di halaman error tersebut.
   const handleOpenChat = (carData: any) => {
     if (!carData) {
       alert("Informasi kendaraan tidak tersedia.");
       return;
     }
-    
-    const ownerMap = carData.user || carData.owner;
-    const ownerId = ownerMap && ownerMap.id ? String(ownerMap.id) : (carData.user_id ? String(carData.user_id) : "2");
-    const ownerName = ownerMap && ownerMap.name ? String(ownerMap.name) : "Perental";
-    const ownerAvatar = ownerMap && ownerMap.avatar ? String(ownerMap.avatar) : "";
 
-    if (!ownerId || ownerId === "null") {
+    if (!user?.id) {
+      alert("Data akun belum siap, coba lagi sesaat lagi.");
+      return;
+    }
+
+    const ownerMap = carData.user || carData.owner;
+    const ownerId =
+      ownerMap && ownerMap.id != null
+        ? String(ownerMap.id)
+        : carData.user_id != null
+          ? String(carData.user_id)
+          : "";
+
+    if (!ownerId) {
       alert("ID Perental tidak valid.");
       return;
     }
 
-    const currentUserId = user?.id ? String(user.id) : "3";
+    const ownerName = (ownerMap && ownerMap.name) || "Perental";
+    const ownerAvatar = (ownerMap && ownerMap.avatar) ? String(ownerMap.avatar) : "";
+    const currentUserId = String(user.id);
+
+    // PENTING: skema "room_rental_{ownerId}_user_{currentUserId}" ini
+    // harus PERSIS SAMA dengan yang dipakai sisi Perental
+    // (RentalsBookingPage.handleOpenChatWithRenter) untuk room yang sama.
     const uniqueChatId = `room_rental_${ownerId}_user_${currentUserId}`;
 
-    navigate(`/chat?room=${uniqueChatId}&name=${encodeURIComponent(`Perental: ${ownerName}`)}&avatar=${encodeURIComponent(ownerAvatar)}`);
+    const params = new URLSearchParams({
+      room: uniqueChatId,
+      receiver_id: ownerId,
+      name: `Perental: ${ownerName}`,
+    });
+    if (ownerAvatar) params.set("avatar", ownerAvatar);
+
+    navigate(`/chat?${params.toString()}`);
   };
 
   const formatDate = (dateStr: string) => {

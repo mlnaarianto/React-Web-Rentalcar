@@ -46,25 +46,56 @@ export const DriverBookingsPage: React.FC = () => {
     }
   }, [authLoading, user]);
 
+  // Navigasi ke Halaman Chat Driver <-> Perental (Pemilik Rental).
+  //
+  // 🔴 FIX (menyamakan pola dengan _openChatWithRentalOwner di Flutter):
+  // - SEBELUMNYA hanya `ownerId` yang di-guard, `currentUserId` (dari
+  //   `user?.id`) tidak pernah dicek sama sekali sebelum dipakai membangun
+  //   uniqueChatId. Kalau fungsi ini sempat dipanggil sebelum data user
+  //   selesai dimuat, chatId bisa berakhir kosong di ujung
+  //   ("room_rental_{ownerId}_driver_") -- bug yang sama yang sudah pernah
+  //   diperbaiki di sisi Flutter. Sekarang currentUserId di-guard eksplisit
+  //   di awal, sama seperti Flutter (`_currentUserId == null || isEmpty`).
+  // - SEBELUMNYA juga TIDAK menyertakan parameter `receiver_id` di query
+  //   string navigasi, padahal ChatPage.tsx mewajibkan receiver_id ada
+  //   (lihat guard "Chat tidak bisa dibuka" di halaman chat). Tanpa
+  //   parameter ini, tombol "Chat Perental" SELALU berakhir di halaman
+  //   error tersebut.
   const handleOpenChatWithRentalOwner = (rentalOwner: any) => {
     if (!rentalOwner) {
       alert("Informasi perental tidak tersedia.");
       return;
     }
 
-    const ownerId = rentalOwner.id ? String(rentalOwner.id) : "";
-    const ownerName = rentalOwner.name || "Perental";
-    const ownerAvatar = rentalOwner.avatar ? String(rentalOwner.avatar) : "";
-    const currentUserId = user?.id ? String(user.id) : "";
+    if (!user?.id) {
+      alert("Data akun belum siap, coba lagi sesaat lagi.");
+      return;
+    }
 
+    const ownerId = rentalOwner.id != null ? String(rentalOwner.id) : "";
     if (!ownerId) {
       alert("ID Perental tidak valid.");
       return;
     }
 
+    const ownerName = rentalOwner.name || "Perental";
+    const ownerAvatar = rentalOwner.avatar ? String(rentalOwner.avatar) : "";
+    const currentUserId = String(user.id);
+
+    // Format unik room chat antara perental dan driver -- HARUS sama persis
+    // dengan sisi Perental (RentalsBookingPage.handleOpenChatWithDriver):
+    // room_rental_{perentalId}_driver_{driverId}. Di sini ownerId berperan
+    // sebagai perentalId, currentUserId sebagai driverId.
     const uniqueChatId = `room_rental_${ownerId}_driver_${currentUserId}`;
 
-    navigate(`/chat?room=${uniqueChatId}&name=${encodeURIComponent(`Perental: ${ownerName}`)}&avatar=${encodeURIComponent(ownerAvatar)}`);
+    const params = new URLSearchParams({
+      room: uniqueChatId,
+      receiver_id: ownerId,
+      name: `Perental: ${ownerName}`,
+    });
+    if (ownerAvatar) params.set("avatar", ownerAvatar);
+
+    navigate(`/chat?${params.toString()}`);
   };
 
   const formatDate = (dateStr: string) => {
