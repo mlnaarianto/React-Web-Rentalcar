@@ -1,14 +1,13 @@
 import React, { useState, useEffect } from "react";
 import Swal from "sweetalert2";
+import PhoneInput, { isValidPhoneNumber } from "react-phone-number-input";
+import "react-phone-number-input/style.css";
 import { useAuth } from "../hooks/useAuth";
 import { AppLayout } from "../layouts/AppLayout";
 import api from "../lib/axios";
 import {
   FiUser,
-  FiMail,
-  FiPhone,
   FiCalendar,
-  FiShield,
   FiSave,
   FiCheckCircle,
   FiUploadCloud,
@@ -16,8 +15,21 @@ import {
   FiFileText,
   FiZoomIn,
   FiX,
-  FiEdit2
+  FiEdit2,
 } from "react-icons/fi";
+
+/**
+ * Normalisasi nomor HP dari server ke format internasional (E.164).
+ * Data lama bisa berformat "0812...", "62812...", atau sudah "+62812...".
+ */
+const normalizePhone = (raw?: string): string => {
+  if (!raw) return "";
+  const cleaned = raw.replace(/[\s-]/g, "");
+  if (cleaned.startsWith("+")) return cleaned;
+  if (cleaned.startsWith("0")) return "+62" + cleaned.slice(1);
+  if (cleaned.startsWith("62")) return "+" + cleaned;
+  return cleaned;
+};
 
 const Profile: React.FC = () => {
   const { user, logout, fetchUser } = useAuth();
@@ -25,7 +37,7 @@ const Profile: React.FC = () => {
   // State Form Utama
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [phone, setPhone] = useState("");
+  const [phone, setPhone] = useState(""); // format E.164, mis. "+6281234567890"
   const [birthDate, setBirthDate] = useState("");
   const [address, setAddress] = useState("");
 
@@ -56,7 +68,7 @@ const Profile: React.FC = () => {
       setEmail(user.email || "");
 
       const personal = (user as any).personal_data || {};
-      setPhone(personal.phone || "");
+      setPhone(normalizePhone(personal.phone));
       setBirthDate(personal.birth_date ? personal.birth_date.split("T")[0] : "");
       setAddress(personal.address || "");
 
@@ -93,13 +105,25 @@ const Profile: React.FC = () => {
 
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // Validasi nomor HP (format internasional)
+    if (!phone || !isValidPhoneNumber(phone)) {
+      Swal.fire({
+        icon: "warning",
+        title: "Nomor HP tidak valid",
+        text: "Periksa kembali nomor HP dan kode negaranya.",
+        confirmButtonColor: "#2563EB",
+      });
+      return;
+    }
+
     setLoading(true);
 
     try {
       const formData = new FormData();
       formData.append("_method", "PATCH");
       formData.append("name", name);
-      formData.append("phone", phone);
+      formData.append("phone", phone); // sudah E.164 (+62...)
       formData.append("birth_date", birthDate);
       formData.append("address", address);
       formData.append("sim_number", simNumber);
@@ -130,10 +154,19 @@ const Profile: React.FC = () => {
         showConfirmButton: false,
       });
     } catch (err: any) {
+      // Gabungkan semua pesan validasi 422 dari Laravel (sama seperti di Flutter)
+      const data = err.response?.data;
+      const validationMessages = data?.errors
+        ? Object.values(data.errors).flat().join("\n")
+        : null;
+
       Swal.fire({
         icon: "error",
         title: "Gagal",
-        text: err.response?.data?.message || "Terjadi kesalahan saat memperbarui profil.",
+        text:
+          validationMessages ||
+          data?.message ||
+          "Terjadi kesalahan saat memperbarui profil.",
         confirmButtonColor: "#2563EB",
       });
     } finally {
@@ -146,18 +179,21 @@ const Profile: React.FC = () => {
       {/* Header Halaman */}
       <div className="mb-8">
         <h2 className="text-2xl font-bold text-gray-800">Lengkapi Data & SIM</h2>
-        <p className="text-gray-600 mt-1">Kelola informasi akun, verifikasi data personal, dan dokumen SIM Anda.</p>
+        <p className="text-gray-600 mt-1">
+          Kelola informasi akun, verifikasi data personal, dan dokumen SIM Anda.
+        </p>
       </div>
 
       <form onSubmit={handleUpdateProfile} className="space-y-8">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-
           {/* Kolom Kiri: Kartu Ringkasan Akun & KTP */}
           <div className="lg:col-span-1 space-y-6">
             <div className="bg-white rounded-2xl shadow-md border border-gray-100 p-6 flex flex-col items-center text-center">
-              <div 
-                className="relative mb-4 group cursor-pointer" 
-                onClick={() => user.avatar && !avatarError && setZoomImage({ url: user.avatar, title: 'Foto Profil' })}
+              <div
+                className="relative mb-4 group cursor-pointer"
+                onClick={() =>
+                  user.avatar && !avatarError && setZoomImage({ url: user.avatar, title: "Foto Profil" })
+                }
               >
                 {user.avatar && !avatarError ? (
                   <img
@@ -190,7 +226,9 @@ const Profile: React.FC = () => {
               <div className="w-full border-t border-gray-100 pt-4 text-left space-y-3">
                 <div className="flex justify-between text-xs text-gray-500">
                   <span>Metode Masuk:</span>
-                  <span className="font-semibold text-gray-700 uppercase">{user.login_type || 'Google'}</span>
+                  <span className="font-semibold text-gray-700 uppercase">
+                    {user.login_type || "Google"}
+                  </span>
                 </div>
                 <div className="flex justify-between text-xs text-gray-500">
                   <span>ID Pengguna:</span>
@@ -206,10 +244,14 @@ const Profile: React.FC = () => {
                   <FiCreditCard className="text-[#2563EB]" /> Foto KTP
                 </h4>
                 {ktpPreview && (
-                  <span className="px-2 py-0.5 bg-green-50 text-green-600 rounded-full text-[10px] font-semibold">Terupload</span>
+                  <span className="px-2 py-0.5 bg-green-50 text-green-600 rounded-full text-[10px] font-semibold">
+                    Terupload
+                  </span>
                 )}
               </div>
-              <p className="text-xs text-gray-500 mb-4">Wajib diupload, pastikan foto jelas dan tidak buram.</p>
+              <p className="text-xs text-gray-500 mb-4">
+                Wajib diupload, pastikan foto jelas dan tidak buram.
+              </p>
 
               <div className="relative border-2 border-dashed border-gray-200 rounded-xl p-3 text-center hover:border-blue-500 transition-colors bg-gray-50">
                 {ktpPreview ? (
@@ -218,19 +260,22 @@ const Profile: React.FC = () => {
                       src={ktpPreview}
                       alt="KTP Preview"
                       className="w-full h-36 object-cover rounded-lg mb-2 cursor-pointer"
-                      onClick={() => setZoomImage({ url: ktpPreview, title: 'Foto KTP' })}
+                      onClick={() => setZoomImage({ url: ktpPreview, title: "Foto KTP" })}
                     />
                     {/* Floating Action Buttons */}
                     <div className="absolute top-2 right-2 flex gap-1.5">
                       <button
                         type="button"
-                        onClick={() => setZoomImage({ url: ktpPreview, title: 'Foto KTP' })}
+                        onClick={() => setZoomImage({ url: ktpPreview, title: "Foto KTP" })}
                         className="p-1.5 bg-black/60 text-white rounded-full hover:bg-black/85 transition-colors"
                         title="Perbesar Foto"
                       >
                         <FiZoomIn size={14} />
                       </button>
-                      <label className="p-1.5 bg-black/60 text-white rounded-full hover:bg-black/85 transition-colors cursor-pointer" title="Ganti Foto">
+                      <label
+                        className="p-1.5 bg-black/60 text-white rounded-full hover:bg-black/85 transition-colors cursor-pointer"
+                        title="Ganti Foto"
+                      >
                         <FiEdit2 size={14} />
                         <input type="file" accept="image/*" onChange={handleKtpChange} className="hidden" />
                       </label>
@@ -249,7 +294,6 @@ const Profile: React.FC = () => {
 
           {/* Kolom Kanan: Form Data Personal & SIM */}
           <div className="lg:col-span-2 space-y-6">
-
             {/* Bagian Akun & Data Personal */}
             <div className="bg-white rounded-2xl shadow-md border border-gray-100 overflow-hidden">
               <div className="bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-4 flex items-center gap-3 text-white">
@@ -260,7 +304,9 @@ const Profile: React.FC = () => {
               <div className="p-6 space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Nama (Dari Google)</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Nama (Dari Google)
+                    </label>
                     <input
                       type="text"
                       value={name}
@@ -280,23 +326,26 @@ const Profile: React.FC = () => {
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Nomor HP dengan kode negara */}
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Nomor HP / WhatsApp</label>
-                    <div className="relative">
-                      <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-400"><FiPhone /></span>
-                      <input
-                        type="text"
-                        value={phone}
-                        onChange={(e) => setPhone(e.target.value)}
-                        placeholder="Contoh: 08123456789"
-                        className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                      />
-                    </div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Nomor HP / WhatsApp
+                    </label>
+                    <PhoneInput
+                      international
+                      defaultCountry="ID"
+                      countryCallingCodeEditable={false}
+                      value={phone}
+                      onChange={(value) => setPhone(value || "")}
+                      placeholder="Contoh: 812 3456 7890"
+                    />
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Tanggal Lahir</label>
                     <div className="relative">
-                      <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-400"><FiCalendar /></span>
+                      <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-400">
+                        <FiCalendar />
+                      </span>
                       <input
                         type="date"
                         value={birthDate}
@@ -366,7 +415,9 @@ const Profile: React.FC = () => {
                   <div className="flex justify-between items-center mb-2">
                     <label className="block text-sm font-medium text-gray-700">Foto SIM</label>
                     {simPreview && (
-                      <span className="px-2 py-0.5 bg-green-50 text-green-600 rounded-full text-[10px] font-semibold">Terupload</span>
+                      <span className="px-2 py-0.5 bg-green-50 text-green-600 rounded-full text-[10px] font-semibold">
+                        Terupload
+                      </span>
                     )}
                   </div>
                   <div className="relative border-2 border-dashed border-gray-200 rounded-xl p-3 text-center hover:border-orange-500 transition-colors bg-gray-50">
@@ -376,19 +427,22 @@ const Profile: React.FC = () => {
                           src={simPreview}
                           alt="SIM Preview"
                           className="w-full h-40 object-cover rounded-lg mb-2 cursor-pointer"
-                          onClick={() => setZoomImage({ url: simPreview, title: 'Foto SIM' })}
+                          onClick={() => setZoomImage({ url: simPreview, title: "Foto SIM" })}
                         />
                         {/* Floating Action Buttons */}
                         <div className="absolute top-2 right-2 flex gap-1.5">
                           <button
                             type="button"
-                            onClick={() => setZoomImage({ url: simPreview, title: 'Foto SIM' })}
+                            onClick={() => setZoomImage({ url: simPreview, title: "Foto SIM" })}
                             className="p-1.5 bg-black/60 text-white rounded-full hover:bg-black/85 transition-colors"
                             title="Perbesar Foto"
                           >
                             <FiZoomIn size={14} />
                           </button>
-                          <label className="p-1.5 bg-black/60 text-white rounded-full hover:bg-black/85 transition-colors cursor-pointer" title="Ganti Foto">
+                          <label
+                            className="p-1.5 bg-black/60 text-white rounded-full hover:bg-black/85 transition-colors cursor-pointer"
+                            title="Ganti Foto"
+                          >
                             <FiEdit2 size={14} />
                             <input type="file" accept="image/*" onChange={handleSimChange} className="hidden" />
                           </label>
@@ -417,9 +471,7 @@ const Profile: React.FC = () => {
                 <span>{loading ? "Menyimpan..." : "Simpan Data Personal & SIM"}</span>
               </button>
             </div>
-
           </div>
-
         </div>
       </form>
 
@@ -442,7 +494,10 @@ const Profile: React.FC = () => {
           </div>
 
           {/* Gambar yang Di-zoom */}
-          <div className="relative max-w-4xl max-h-[80vh] overflow-auto flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="relative max-w-4xl max-h-[80vh] overflow-auto flex items-center justify-center"
+            onClick={(e) => e.stopPropagation()}
+          >
             <img
               src={zoomImage.url}
               alt={zoomImage.title}

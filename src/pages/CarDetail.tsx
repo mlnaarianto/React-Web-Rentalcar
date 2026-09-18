@@ -8,8 +8,9 @@ import {
   FiArrowLeft, FiTruck, FiUser, FiSettings,
   FiFileText, FiCheckCircle, FiXCircle, FiPlayCircle,
   FiMapPin, FiMap, FiExternalLink, FiCopy, FiCheck,
-  FiZoomIn, FiX, FiNavigation
+  FiZoomIn, FiX, FiNavigation, FiPhone
 } from "react-icons/fi";
+import { FaWhatsapp } from "react-icons/fa";
 import { MapContainer, TileLayer, Marker, Popup, ZoomControl } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -57,6 +58,22 @@ interface Car {
     };
   };
 }
+
+// ================= HELPER NOMOR TELEPON / WHATSAPP =================
+const sanitizePhone = (phone: string) => phone.replace(/[^0-9+]/g, "");
+
+/**
+ * Konversi ke format wa.me (tanpa '+', tanpa '0' di depan).
+ * - Diawali '+'  : sudah internasional, tinggal buang '+'
+ * - Diawali '0'  : format lokal, pakai kode negara default (Indonesia = 62)
+ * - Lainnya      : dianggap sudah diawali kode negara, dipakai apa adanya
+ */
+const toWhatsAppFormat = (phone: string, defaultCountryCode = "62") => {
+  const digits = sanitizePhone(phone);
+  if (digits.startsWith("+")) return digits.slice(1);
+  if (digits.startsWith("0")) return defaultCountryCode + digits.slice(1);
+  return digits;
+};
 
 const CarDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -179,6 +196,17 @@ const CarDetail: React.FC = () => {
   const personalData = owner?.personal_data;
   const isAvailable = car.status === 'tersedia';
 
+  // Nomor HP pemilik + aksi telepon / WhatsApp
+  const ownerPhone = personalData?.phone || "";
+  const hasPhone = ownerPhone !== "" && ownerPhone !== "-";
+
+  const openWhatsApp = () => {
+    if (!hasPhone) return;
+    const waNumber = toWhatsAppFormat(ownerPhone);
+    const message = encodeURIComponent(`Halo, saya tertarik untuk menyewa ${car.name}.`);
+    window.open(`https://wa.me/${waNumber}?text=${message}`, "_blank", "noopener,noreferrer");
+  };
+
   const rentalApplication = owner?.rental_application;
   const businessName = rentalApplication?.business_name?.toString() || "";
   const businessAddress =
@@ -233,10 +261,10 @@ const CarDetail: React.FC = () => {
       }
 
       const secondsInt = Math.floor(seconds);
-      const targetUrl = secondsInt > 1 
+      const targetUrl = secondsInt > 1
         ? `https://www.youtube.com/watch?v=${youtubeId}&t=${secondsInt}s`
         : `https://www.youtube.com/watch?v=${youtubeId}`;
-      
+
       window.open(targetUrl, "_blank", "noopener,noreferrer");
     }
   };
@@ -255,7 +283,7 @@ const CarDetail: React.FC = () => {
 
           <div className="h-72 sm:h-96 w-full rounded-2xl overflow-hidden relative shadow-md bg-gray-100 group">
             {car.image ? (
-              <div 
+              <div
                 className="w-full h-full cursor-zoom-in relative"
                 onClick={() => setZoomImage({ url: getCarImageUrl(car.image), title: car.name })}
               >
@@ -432,7 +460,7 @@ const CarDetail: React.FC = () => {
                   <div className="space-y-3">
                     <div className="relative w-full pt-[56.25%] rounded-xl overflow-hidden bg-black shadow-inner">
                       <YouTube
-                        videoId={youtubeId}
+                        videoId={youtubeId as string}
                         opts={{
                           height: '100%',
                           width: '100%',
@@ -452,7 +480,7 @@ const CarDetail: React.FC = () => {
                         onClick={handleOpenYouTubeWithTimestamp}
                         className="inline-flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-3.5 py-2 rounded-xl text-xs font-semibold transition-colors shadow-sm cursor-pointer"
                       >
-                        <FiExternalLink size={13} /> 
+                        <FiExternalLink size={13} />
                         Tonton di YouTube {currentTime > 1 ? `(Lanjutkan di ${Math.floor(currentTime / 60)}:${(Math.floor(currentTime % 60)).toString().padStart(2, '0')})` : ''}
                       </button>
                     </div>
@@ -495,10 +523,38 @@ const CarDetail: React.FC = () => {
                   <p className="text-xs text-gray-400">Email</p>
                   <p className="text-sm font-semibold text-gray-800 break-all">{owner?.email || '-'}</p>
                 </div>
+
+                {/* Nomor HP + tombol Telepon (mobile saja) & WhatsApp */}
                 <div>
                   <p className="text-xs text-gray-400">Nomor HP</p>
-                  <p className="text-sm font-semibold text-gray-800">{personalData?.phone || '-'}</p>
+                  <div className="flex items-center justify-between gap-2 mt-0.5">
+                    <p className="text-sm font-semibold text-gray-800">{ownerPhone || '-'}</p>
+
+                    {hasPhone && (
+                      <div className="flex items-center gap-2">
+                        {/* Telepon: hanya tampil di layar kecil (HP) */}
+                        <a
+                          href={`tel:${sanitizePhone(ownerPhone)}`}
+                          title="Telepon"
+                          className="md:hidden p-2 rounded-full bg-green-50 text-green-600 hover:bg-green-100 transition-colors"
+                        >
+                          <FiPhone size={15} />
+                        </a>
+
+                        {/* WhatsApp: tampil di semua perangkat */}
+                        <button
+                          type="button"
+                          onClick={openWhatsApp}
+                          title="Chat via WhatsApp"
+                          className="p-2 rounded-full bg-[#25D366]/10 text-[#25D366] hover:bg-[#25D366]/20 transition-colors cursor-pointer"
+                        >
+                          <FaWhatsapp size={16} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
+
                 <div>
                   <p className="text-xs text-gray-400">Alamat</p>
                   <p className="text-sm font-semibold text-gray-800">{personalData?.address || '-'}</p>
@@ -539,8 +595,8 @@ const CarDetail: React.FC = () => {
               <FiX size={20} />
             </button>
           </div>
-          <div 
-            className="relative max-w-5xl max-h-[85vh] overflow-auto flex items-center justify-center p-2" 
+          <div
+            className="relative max-w-5xl max-h-[85vh] overflow-auto flex items-center justify-center p-2"
             onClick={(e) => e.stopPropagation()}
           >
             <img

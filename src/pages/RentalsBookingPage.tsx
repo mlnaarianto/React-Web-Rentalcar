@@ -1,15 +1,17 @@
 import React, { useState, useEffect } from "react";
-import { 
-  FiClock, 
-  FiAlertCircle, 
-  FiRefreshCw, 
-  FiCalendar, 
-  FiKey, 
-  FiUserCheck, 
-  FiMessageSquare, 
-  FiUserPlus, 
+import {
+  FiClock,
+  FiAlertCircle,
+  FiRefreshCw,
+  FiCalendar,
+  FiKey,
+  FiUserCheck,
+  FiMessageSquare,
+  FiUserPlus,
   FiCheck,
-  FiX
+  FiX,
+  FiDollarSign,
+  FiCheckCircle
 } from "react-icons/fi";
 import { useAuth } from "../hooks/useAuth";
 import { AppLayout } from "../layouts/AppLayout";
@@ -24,8 +26,15 @@ export const RentalsBookingPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // State untuk melacak ID booking mana yang sedang mengecek pembayaran
+  // State untuk melacak ID booking mana yang sedang mengecek pembayaran (QRIS)
   const [checkingPaymentIds, setCheckingPaymentIds] = useState<number[]>([]);
+
+  // State untuk melacak ID booking mana yang sedang menyimpan konfirmasi tunai (COD),
+  // pola yang sama dengan _confirmingCashIds di Flutter.
+  const [confirmingCashIds, setConfirmingCashIds] = useState<number[]>([]);
+
+  // State untuk dialog konfirmasi tunai (padanan _showConfirmCashDialog di Flutter)
+  const [cashConfirmBookingId, setCashConfirmBookingId] = useState<number | null>(null);
 
   // State untuk Dialog Penugasan Driver
   const [assigningBookingId, setAssigningBookingId] = useState<number | null>(null);
@@ -137,21 +146,46 @@ export const RentalsBookingPage: React.FC = () => {
     }
   };
 
-  // Navigasi ke Halaman Chat Perental <-> Penyewa.
+  // Konfirmasi pembayaran TUNAI (COD) oleh Perental.
   //
-  // 🔴 FIX (menyamakan pola dengan _openChatWithRenter di Flutter):
-  // - SEBELUMNYA ada fallback `renter.id || "3"` dan `user?.id || "2"`.
-  //   Fallback ini berbahaya: kalau data renter atau user belum lengkap
-  //   (mis. relasi belum ter-load dari backend), chat tetap dibuka tapi
-  //   diam-diam memakai ID yang SALAH (renter fiktif ID 3, atau seolah
-  //   perental login sebagai user ID 2) tanpa pemberitahuan apapun ke
-  //   perental. Sekarang di-guard eksplisit: kalau ID tidak valid,
-  //   tampilkan alert dan batalkan navigasi -- sama seperti guard
-  //   `_currentUserId == null` / `renterId.isEmpty` di Flutter.
-  // - SEBELUMNYA juga TIDAK menyertakan parameter `receiver_id` di query
-  //   string, padahal ChatPage.tsx mewajibkan receiver_id ada (lihat guard
-  //   "Chat tidak bisa dibuka"). Tanpa parameter ini, tombol "Chat
-  //   Penyewa" SELALU berakhir di halaman error tersebut.
+  // Beda dengan QRIS (diverifikasi otomatis lewat Midtrans), COD dibayar
+  // langsung secara fisik saat serah-terima mobil, jadi tidak ada gateway
+  // yang bisa dicek. Hanya Perental yang tahu uang tunai benar-benar
+  // diterima, jadi ini murni aksi manual dari sisi Perental.
+  //
+  // Request lewat PATCH /api/bookings/{id}/status yang di backend selalu
+  // melewati authorize('updateStatus', $booking), jadi Penyewa tidak bisa
+  // memicu endpoint ini untuk mengklaim lunas sendiri.
+  const handleConfirmCashPayment = async (bookingId: number) => {
+    setConfirmingCashIds((prev) => [...prev, bookingId]);
+    try {
+      const response = await api.patch(`/api/bookings/${bookingId}/status`, {
+        payment_status: "paid",
+      });
+
+      if (response.status === 200) {
+        alert("Pembayaran tunai berhasil dikonfirmasi LUNAS!");
+        fetchBookings();
+      }
+    } catch (err: any) {
+      console.error("Gagal mengonfirmasi pembayaran tunai:", err);
+      alert(err.response?.data?.message || "Gagal mengonfirmasi pembayaran tunai.");
+    } finally {
+      setConfirmingCashIds((prev) => prev.filter((id) => id !== bookingId));
+    }
+  };
+
+  // Dipanggil dari tombol "Ya, Sudah Diterima" di dialog konfirmasi
+  const handleSubmitCashConfirmation = async () => {
+    if (cashConfirmBookingId === null) return;
+    const bookingId = cashConfirmBookingId;
+    setCashConfirmBookingId(null);
+    await handleConfirmCashPayment(bookingId);
+  };
+
+  // Navigasi ke Halaman Chat Perental <-> Penyewa.
+  // Di-guard: kalau data user/renter tidak valid, batalkan navigasi
+  // (tidak ada fallback ID diam-diam), sama seperti di Flutter.
   const handleOpenChatWithRenter = (renter: any) => {
     if (!user?.id) {
       alert("Data akun belum siap, coba lagi sesaat lagi.");
@@ -171,8 +205,6 @@ export const RentalsBookingPage: React.FC = () => {
     // PENTING: skema "room_rental_{perentalId}_user_{renterId}" ini harus
     // PERSIS SAMA dengan yang dipakai halaman chat milik Penyewa untuk room
     // yang sama (backend mencocokkan chatId ke room_identifier apa adanya).
-    // Kalau sisi Penyewa membangun chatId dengan urutan/format berbeda,
-    // keduanya akan dianggap dua room terpisah oleh backend.
     const uniqueChatId = `room_rental_${currentUserId}_user_${renterId}`;
 
     const params = new URLSearchParams({
@@ -186,8 +218,7 @@ export const RentalsBookingPage: React.FC = () => {
   };
 
   // Navigasi ke Halaman Chat Perental <-> Driver.
-  // Guard dan alasan yang sama persis seperti handleOpenChatWithRenter di
-  // atas -- lihat komentar di sana.
+  // Guard dan alasan yang sama seperti handleOpenChatWithRenter.
   const handleOpenChatWithDriver = (driver: any) => {
     if (!user?.id) {
       alert("Data akun belum siap, coba lagi sesaat lagi.");
@@ -204,9 +235,6 @@ export const RentalsBookingPage: React.FC = () => {
     const driverAvatar = driver?.avatar || "";
     const currentUserId = String(user.id);
 
-    // Catatan skema chatId sama seperti di handleOpenChatWithRenter --
-    // pastikan sisi Driver (kalau punya halaman chat sendiri ke Perental)
-    // memakai format yang identik untuk room yang sama.
     const uniqueChatId = `room_rental_${currentUserId}_driver_${driverId}`;
 
     const params = new URLSearchParams({
@@ -267,7 +295,7 @@ export const RentalsBookingPage: React.FC = () => {
   return (
     <AppLayout user={user} logout={logout}>
       <div className="max-w-5xl mx-auto space-y-6 pb-12">
-        
+
         {/* Header Halaman */}
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
           <h1 className="text-2xl font-bold text-gray-800">Kelola Pesanan & Driver</h1>
@@ -310,10 +338,11 @@ export const RentalsBookingPage: React.FC = () => {
               const withDriver = booking.with_driver === 1 || booking.with_driver === true;
               const isPaid = paymentStatus === "paid";
               const isCheckingThisPayment = checkingPaymentIds.includes(booking.id);
+              const isConfirmingThisCash = confirmingCashIds.includes(booking.id);
 
               return (
                 <div key={booking.id} className="bg-white rounded-2xl p-6 border border-gray-100 shadow-sm space-y-4">
-                  
+
                   {/* Header Card */}
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-gray-100">
                     <div className="flex-1">
@@ -397,7 +426,31 @@ export const RentalsBookingPage: React.FC = () => {
                         className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 flex-shrink-0 disabled:opacity-50"
                       >
                         {isCheckingThisPayment && <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />}
-                        Cek Status Pembayaran
+                        {isCheckingThisPayment ? "Memeriksa..." : "Cek Status Pembayaran"}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Panel Konfirmasi Pembayaran TUNAI (Jika metode COD dan belum lunas).
+                      Satu-satunya cara payment_status COD berubah jadi 'paid':
+                      aksi manual Perental setelah benar-benar menerima uang tunai. */}
+                  {paymentMethod === "cod" && !isPaid && (
+                    <div className="p-3 bg-green-50/60 rounded-xl border border-green-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 text-xs text-green-800 font-medium">
+                        <FiDollarSign className="flex-shrink-0" size={15} />
+                        Belum ada konfirmasi penerimaan tunai dari Anda.
+                      </div>
+                      <button
+                        disabled={isConfirmingThisCash}
+                        onClick={() => setCashConfirmBookingId(booking.id)}
+                        className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-1.5 flex-shrink-0 disabled:opacity-50"
+                      >
+                        {isConfirmingThisCash ? (
+                          <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        ) : (
+                          <FiCheckCircle size={14} />
+                        )}
+                        {isConfirmingThisCash ? "Menyimpan..." : "Konfirmasi Tunai Diterima"}
                       </button>
                     </div>
                   )}
@@ -441,6 +494,44 @@ export const RentalsBookingPage: React.FC = () => {
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {/* Modal Konfirmasi Pembayaran Tunai */}
+        {cashConfirmBookingId !== null && (
+          <div
+            className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm"
+            onClick={() => setCashConfirmBookingId(null)}
+          >
+            <div
+              className="bg-white rounded-2xl max-w-sm w-full p-6 space-y-4 shadow-xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="w-12 h-12 bg-green-50 text-green-600 rounded-full flex items-center justify-center mx-auto">
+                <FiDollarSign size={24} />
+              </div>
+
+              <h3 className="font-bold text-gray-800 text-lg text-center">Konfirmasi Pembayaran Tunai</h3>
+              <p className="text-xs text-gray-500 text-center leading-relaxed">
+                Pastikan Anda sudah benar-benar menerima uang tunai dari penyewa
+                sebelum menandai pesanan ini sebagai LUNAS.
+              </p>
+
+              <div className="space-y-2 pt-2">
+                <button
+                  onClick={handleSubmitCashConfirmation}
+                  className="w-full py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm flex items-center justify-center gap-2"
+                >
+                  <FiCheck size={16} /> Ya, Sudah Diterima
+                </button>
+                <button
+                  onClick={() => setCashConfirmBookingId(null)}
+                  className="w-full py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl text-xs font-semibold transition-all"
+                >
+                  Batal
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
