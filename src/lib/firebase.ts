@@ -3,24 +3,22 @@ import { initializeApp } from "firebase/app";
 import { getMessaging, getToken, deleteToken, onMessage, type MessagePayload } from "firebase/messaging";
 import api from "./axios";
 
-// 🟢 Config asli dari Firebase Console (Project settings → Web App
-// "Rental Web") -- appId sebelumnya cuma placeholder karangan
-// ("generated_app_id"), makanya getToken() selalu gagal 400
-// INVALID_ARGUMENT. Ini sudah App ID yang valid.
+// 🟢 Config asli dari Firebase Console (Project settings → Web App "Rental Web")
+// Diambil dari environment variables
 const firebaseConfig = {
-  apiKey: "AIzaSyDtPm0ThLZOu7VEeGsAu0cBv-SvIIQ1rqQ",
-  authDomain: "rental-b9f93.firebaseapp.com",
-  projectId: "rental-b9f93",
-  storageBucket: "rental-b9f93.firebasestorage.app",
-  messagingSenderId: "380636655706",
-  appId: "1:380636655706:web:49ffee0de61b75f103e863",
-  measurementId: "G-MN2437JVTR"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
 };
 
 const app = initializeApp(firebaseConfig);
 export const messaging = getMessaging(app);
 
-const VAPID_KEY = "BMwBaOHdSAm5E9I11K_SaFkWmgfL3G8GcFaKrhzoDnwtYmIapzSMCPAZwCPgRRP23_uDo9MuoDQInO_Ny1kyQMQ";
+const VAPID_KEY = import.meta.env.VITE_FIREBASE_VAPID_KEY;
 const DEVICE_ID_STORAGE_KEY = "fcm_device_id";
 
 /**
